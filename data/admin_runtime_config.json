@@ -14,7 +14,7 @@
   },
   "area_join_notify": {
     "enabled": true,
-    "poll_interval_seconds": 2
+    "poll_interval_seconds": 60
   },
   "chat": {
     "enabled": true
@@ -22,6 +22,48 @@
   "profanity": {
     "enabled": true,
     "mute_duration": 5,
-    "warn_before_mute": true
+    "warn_before_mute": true,
+    "skip_admins": true,
+    "context_detection": true,
+    "context_window": 30,
+    "context_max_messages": 10,
+    "ai_detection": true,
+    "ai_min_length": 2
+  },
+  "oopz": {
+    "default_area": "",
+    "default_channel": "",
+    "proxy": "",
+    "use_announcement_style": true
+  },
+  "netease": {
+    "base_url": "http://localhost:3000",
+    "audio_download_timeout": 120,
+    "audio_download_retries": 2,
+    "audio_quality": "standard",
+    "cookie": ""
+  },
+  "redis": {
+    "host": "127.0.0.1",
+    "port": 6379,
+    "db": 0,
+    "decode_responses": true
+  },
+  "doubao_chat": {
+    "enabled": true,
+    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "model": "doubao-1-5-pro-32k-250115",
+    "max_tokens": 256,
+    "temperature": 0.7,
+    "system_prompt": "你是 Oopz Bot，一个活泼有趣的聊天机器人。回复简洁友好，不超过100字。",
+    "api_key": ""
+  },
+  "doubao_image": {
+    "enabled": true,
+    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "model": "doubao-seedream-4-5-251128",
+    "size": "1920x1920",
+    "watermark": false,
+    "api_key": ""
   }
 }
