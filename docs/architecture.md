@@ -56,7 +56,7 @@ NeteaseCloud API (:3000)
              │                                  │
    ┌─────────┴──────────┐                Agora RTC (语音频道)
    │  Nginx / OpenResty │                       │
-   │  :80 (HTTP)        │              agora_player.html
+   │  :80 → 301 HTTPS   │              agora_player.html
    │  :443 (HTTPS+SSL)  │           浏览器自动化（Playwright/Selenium）
    └─────────┬──────────┘           音频推流/暂停/跳转/音量
              │

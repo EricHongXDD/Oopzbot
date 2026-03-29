@@ -92,7 +92,7 @@ docker-compose up -d
 
 | 服务 | 端口 | 说明 |
 |------|------|------|
-| nginx | 80 / 443 | 反向代理，统一对外入口（HTTP + HTTPS） |
+| nginx | 80 / 443 | 反向代理，HTTP 301 重定向到 HTTPS |
 | bot | 8080（内部） | 主程序 + Web 播放器 |
 | netease-api | 3000（内部） | 网易云音乐 API |
 | redis | -- | 内部通信，不暴露 |
@@ -118,12 +118,13 @@ apt install -y nginx
 
 # 复制项目自带的站点配置
 cp nginx/nginx.conf /etc/nginx/sites-available/oopzbot
-ln -s /etc/nginx/sites-available/oopzbot /etc/nginx/sites-enabled/oopzbot
+ln -sf /etc/nginx/sites-available/oopzbot /etc/nginx/sites-enabled/oopzbot
 
-# 复制 SSL 证书
+# 复制 SSL 证书并设置权限
 mkdir -p /etc/nginx/ssl
 cp nginx/ssl/cert.pem /etc/nginx/ssl/cert.pem
 cp nginx/ssl/key.pem /etc/nginx/ssl/key.pem
+chmod 600 /etc/nginx/ssl/key.pem
 
 # 禁用默认站点、测试并重载
 rm -f /etc/nginx/sites-enabled/default
