@@ -1,7 +1,7 @@
 from app.services.plugins.plugin_capability_formatter import format_plugin_command_summary
 from app.services.runtime import CommandRuntimeView, chat_of, plugins_of, sender_of
 
-from .help_catalog import HELP_TOPICS, resolve_help_topic, suggest_command_usages, suggest_help_topics
+from .help_catalog import ADMIN_ONLY_TOPICS, HELP_TOPICS, resolve_help_topic, suggest_command_usages, suggest_help_topics
 
 
 class HelpService:
@@ -35,14 +35,24 @@ class HelpService:
                     suggestions.append(slash)
         return suggestions[:limit]
 
+    _OVERVIEW_ADMIN_LINES = frozenset({
+        "  帮助 管理  禁言、撤回、清理、身份组",
+        "  帮助 定时  定时消息与提醒管理",
+        "  帮助 插件  插件命令与管理",
+    })
+
     def _overview_lines(self, is_admin: bool, ai_chat_available: bool, ai_image_available: bool) -> list[str]:
         role_label = "管理员" if is_admin else "普通用户"
+        overview = HELP_TOPICS["overview"]
+        topic_lines: tuple[str, ...] = overview.lines
+        if not is_admin:
+            topic_lines = tuple(l for l in topic_lines if l not in self._OVERVIEW_ADMIN_LINES)
         lines = [
             f"**Oopz Bot 帮助** [{role_label}]",
             "",
-            f"**{HELP_TOPICS['overview'].title}**",
-            HELP_TOPICS["overview"].description,
-            *HELP_TOPICS["overview"].lines,
+            f"**{overview.title}**",
+            overview.description,
+            *topic_lines,
         ]
 
         if ai_chat_available or ai_image_available:
@@ -120,6 +130,8 @@ class HelpService:
             ]
             if suggested:
                 lines.append(f"你是不是想看: {', '.join(suggested)}")
+        elif topic_key and topic_key != "overview" and not is_admin and topic_key in ADMIN_ONLY_TOPICS:
+            lines = [f"帮助主题「{HELP_TOPICS[topic_key].title}」仅管理员可查看"]
         elif topic_key and topic_key != "overview":
             lines = self._topic_lines(topic_key, is_admin)
         else:
@@ -132,7 +144,7 @@ class HelpService:
             "/me  |  /myinfo",
         ]
 
-        if plugin_caps:
+        if is_admin and plugin_caps:
             lines += ["", "**已加载扩展命令**"]
             for item in plugin_caps:
                 summary = format_plugin_command_summary(item, empty_text="（无）")

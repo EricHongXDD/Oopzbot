@@ -13,6 +13,8 @@ class HelpTopic:
     lines: tuple[str, ...]
 
 
+ADMIN_ONLY_TOPICS = frozenset({"admin", "schedule", "plugin"})
+
 HELP_TOPICS: dict[str, HelpTopic] = {
     "overview": HelpTopic(
         key="overview",
