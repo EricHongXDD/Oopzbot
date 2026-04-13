@@ -1,5 +1,6 @@
     let currentArea = "";
     let channelsData = [];
+    let areaRolesData = [];
 
     function setState(text, variant) {
       AdminShell.setStatus(text, variant, "topStatus");
@@ -51,7 +52,10 @@
     async function loadAreaManager() {
       await loadAreas();
       if (currentArea) {
-        await Promise.all([loadAreaConfig(), loadChannels(), loadVoiceChannels()]);
+        await Promise.all([loadAreaRoles(), loadChannels(), loadVoiceChannels()]);
+        await loadAreaConfig();
+      } else {
+        resetAreaAssistantFields();
       }
       setState("已同步", "success");
     }
@@ -79,7 +83,11 @@
     function onAreaChange() {
       currentArea = AdminShell.byId("areaPicker").value;
       if (currentArea) {
-        Promise.all([loadAreaConfig(), loadChannels(), loadVoiceChannels()]);
+        setSelectLoading("ac_default_channel_select", "正在加载频道...");
+        setSelectLoading("ac_auto_role_select", "正在加载身份组...");
+        Promise.all([loadAreaRoles(), loadChannels(), loadVoiceChannels()]).then(loadAreaConfig);
+      } else {
+        resetAreaAssistantFields();
       }
     }
 
@@ -90,6 +98,127 @@
       if (!el) return;
       if (el.type === "checkbox") el.checked = !!value;
       else el.value = value ?? "";
+    }
+
+    function getAcVal(id) {
+      const el = AdminShell.byId(id);
+      return el ? (el.value || "") : "";
+    }
+
+    function setSelectLoading(id, text) {
+      const el = AdminShell.byId(id);
+      if (!el) return;
+      el.innerHTML = `<option value="">${esc(text || "加载中...")}</option>`;
+      AdminShell.refreshCustomSelect(id);
+    }
+
+    function resetAreaAssistantFields() {
+      channelsData = [];
+      areaRolesData = [];
+      setSelectLoading("ac_default_channel_select", "先选择域后加载频道");
+      setSelectLoading("ac_auto_role_select", "先选择域后加载身份组");
+    }
+
+    function populateChannelSelect(selectedValue) {
+      const el = AdminShell.byId("ac_default_channel_select");
+      if (!el) return;
+      const groups = new Map();
+      (channelsData || []).forEach((ch) => {
+        const groupName = ch.group || "未分组";
+        if (!groups.has(groupName)) {
+          groups.set(groupName, []);
+        }
+        groups.get(groupName).push(ch);
+      });
+
+      let html = '<option value="">不设置</option>';
+      let matched = !selectedValue;
+      groups.forEach((items, groupName) => {
+        html += `<optgroup label="${esc(groupName)}">`;
+        items.forEach((ch) => {
+          const value = String(ch.id || "");
+          const label = ch.name ? `${ch.name} (${value})` : value;
+          if (value === selectedValue) matched = true;
+          html += `<option value="${esc(value)}">${esc(label)}</option>`;
+        });
+        html += "</optgroup>";
+      });
+
+      if (selectedValue && !matched) {
+        html += `<option value="${esc(selectedValue)}">当前已保存值 (${esc(selectedValue)})</option>`;
+      }
+      if (!channelsData.length) {
+        html = selectedValue
+          ? `<option value="${esc(selectedValue)}">当前已保存值 (${esc(selectedValue)})</option>`
+          : '<option value="">暂无可选频道</option>';
+      }
+
+      el.innerHTML = html;
+      el.value = selectedValue || "";
+      AdminShell.refreshCustomSelect("ac_default_channel_select");
+    }
+
+    function populateRoleSelect(selectedRoleId, selectedRoleName) {
+      const el = AdminShell.byId("ac_auto_role_select");
+      if (!el) return;
+      let html = '<option value="">不自动分配</option>';
+      let matched = !selectedRoleId;
+
+      (areaRolesData || []).forEach((role) => {
+        const roleId = String(role.id || "");
+        const roleName = String(role.name || "");
+        const label = roleName ? `${roleName} (${roleId})` : roleId;
+        if (roleId === selectedRoleId) matched = true;
+        html += `<option value="${esc(roleId)}" data-role-name="${esc(roleName)}">${esc(label)}</option>`;
+      });
+
+      if (selectedRoleId && !matched) {
+        const fallbackName = selectedRoleName || "当前已保存身份组";
+        html += `<option value="${esc(selectedRoleId)}" data-role-name="${esc(fallbackName)}">${esc(fallbackName)} (${esc(selectedRoleId)})</option>`;
+      }
+      if (!areaRolesData.length) {
+        if (selectedRoleId) {
+          const fallbackName = selectedRoleName || "当前已保存身份组";
+          html = `<option value="${esc(selectedRoleId)}" data-role-name="${esc(fallbackName)}">${esc(fallbackName)} (${esc(selectedRoleId)})</option>`;
+        } else {
+          html = '<option value="">暂无可选身份组</option>';
+        }
+      }
+
+      el.innerHTML = html;
+      el.value = selectedRoleId || "";
+      AdminShell.refreshCustomSelect("ac_auto_role_select");
+    }
+
+    function syncAreaAssistantSelects() {
+      populateChannelSelect(getAcVal("ac_default_channel"));
+      populateRoleSelect(getAcVal("ac_auto_role_id"), getAcVal("ac_auto_role_name"));
+    }
+
+    function onDefaultChannelSelectChange() {
+      const el = AdminShell.byId("ac_default_channel_select");
+      if (!el) return;
+      setAcVal("ac_default_channel", el.value || "");
+    }
+
+    function onAutoRoleSelectChange() {
+      const el = AdminShell.byId("ac_auto_role_select");
+      if (!el) return;
+      const option = el.options[el.selectedIndex];
+      setAcVal("ac_auto_role_id", el.value || "");
+      setAcVal("ac_auto_role_name", option ? (option.dataset.roleName || "") : "");
+    }
+
+    async function loadAreaRoles() {
+      if (!currentArea) return;
+      try {
+        const data = await AdminShell.req(`/admin/api/areas/${encodeURIComponent(currentArea)}/meta`);
+        areaRolesData = data.roles || [];
+        populateRoleSelect(getAcVal("ac_auto_role_id"), getAcVal("ac_auto_role_name"));
+      } catch (_) {
+        areaRolesData = [];
+        populateRoleSelect(getAcVal("ac_auto_role_id"), getAcVal("ac_auto_role_name"));
+      }
     }
 
     async function loadAreaConfig() {
@@ -107,6 +236,7 @@
         setAcVal("ac_plugins_enabled", (c.plugins_enabled || []).join(", "));
         setAcVal("ac_plugins_disabled", (c.plugins_disabled || []).join(", "));
         setAcVal("ac_profanity", c.profanity_enabled !== false);
+        syncAreaAssistantSelects();
         if (data.configured) {
           AdminShell.showMessage("areaConfigMsg", "当前域已有独立配置");
         } else {
@@ -171,6 +301,7 @@
       try {
         const data = await AdminShell.req(`/admin/api/channels?area=${encodeURIComponent(currentArea)}`);
         channelsData = data.channels || [];
+        populateChannelSelect(getAcVal("ac_default_channel"));
         if (!channelsData.length) {
           tbody.innerHTML = '<tr><td colspan="5" class="empty-state">暂无频道</td></tr>';
           return;
@@ -198,6 +329,8 @@
           </tr>`;
         }).join("");
       } catch (e) {
+        channelsData = [];
+        populateChannelSelect(getAcVal("ac_default_channel"));
         tbody.innerHTML = `<tr><td colspan="5" class="empty-state">加载失败: ${esc(e.message)}</td></tr>`;
       }
     }
@@ -410,6 +543,8 @@
     }
 
     AdminShell.init({ page: "areas", passwordHandler: login });
+    AdminShell.upgradeSelect("ac_default_channel_select");
+    AdminShell.upgradeSelect("ac_auto_role_select");
     AdminShell.upgradeSelect("newChType");
     AdminShell.upgradeSelect("editChVoiceQuality");
     AdminShell.upgradeSelect("editChVoiceDelay");

@@ -24,7 +24,14 @@ class CommandRouter:
         text = ctx.mention_text(self._bot_mention)
         is_ai_chat = False
         if text:
-            is_ai_chat = self._services.routing.mention.dispatch(text, ctx.channel, ctx.area, ctx.user)
+            # 仅在路由器显式返回 True 时，才把本次消息视为 AI 对话兜底。
+            # 这样测试桩或普通命令处理返回的真值对象不会误伤撤回链路。
+            is_ai_chat = self._services.routing.mention.dispatch(
+                text,
+                ctx.channel,
+                ctx.area,
+                ctx.user,
+            ) is True
         if not is_ai_chat:
             self._services.safety.recall_scheduler.schedule_user_message_recall(
                 ctx.message_id,

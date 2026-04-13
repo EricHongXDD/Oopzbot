@@ -20,9 +20,21 @@
           </div>
           <div class="field-grid" style="padding:16px 20px">
             <div class="field field--wide"><label for="ac_name">域名称</label><input id="ac_name" type="text" placeholder="仅日志显示" /></div>
-            <div class="field"><label for="ac_default_channel">默认频道 ID</label><input id="ac_default_channel" type="text" /></div>
-            <div class="field"><label for="ac_auto_role_id">自动分配身份组 ID</label><input id="ac_auto_role_id" type="text" /></div>
-            <div class="field"><label for="ac_auto_role_name">自动分配身份组名称</label><input id="ac_auto_role_name" type="text" /></div>
+            <div class="field field--wide">
+              <label for="ac_default_channel_select">默认频道</label>
+              <select id="ac_default_channel_select" onchange="onDefaultChannelSelectChange()">
+                <option value="">先选择域后加载频道</option>
+              </select>
+            </div>
+            <div class="field field--wide">
+              <label for="ac_auto_role_select">自动分配身份组</label>
+              <select id="ac_auto_role_select" onchange="onAutoRoleSelectChange()">
+                <option value="">先选择域后加载身份组</option>
+              </select>
+            </div>
+            <input id="ac_default_channel" type="hidden" />
+            <input id="ac_auto_role_id" type="hidden" />
+            <input id="ac_auto_role_name" type="hidden" />
             <div class="field field--wide"><label for="ac_welcome">入域欢迎消息</label><input id="ac_welcome" type="text" placeholder="欢迎 {name} 加入～" /></div>
             <div class="field field--wide"><label for="ac_leave">退域消息</label><input id="ac_leave" type="text" placeholder="{name} 已退出域" /></div>
             <div class="field field--wide"><label for="ac_admin_uids">管理员 UID（逗号分隔）</label><input id="ac_admin_uids" type="text" placeholder="空则继承全局" /></div>

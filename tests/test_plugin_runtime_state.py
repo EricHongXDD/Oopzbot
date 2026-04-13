@@ -105,6 +105,11 @@ class PluginRuntimeStateTest(unittest.TestCase):
         self.assertEqual(result.code, PluginOperationCode.LOAD_FAILED)
         self.assertEqual(runtime.enabled_plugin_names(), ["alpha"])
 
+    def test_plugin_operation_code_is_string_enum_compatible(self) -> None:
+        self.assertIsInstance(PluginOperationCode.SUCCESS, str)
+        self.assertEqual(PluginOperationCode.SUCCESS, "success")
+        self.assertEqual(str(PluginOperationCode.SUCCESS), "success")
+
 
 if __name__ == "__main__":
     unittest.main()

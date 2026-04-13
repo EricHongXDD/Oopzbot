@@ -144,7 +144,7 @@ class HelpService:
             "/me  |  /myinfo",
         ]
 
-        if is_admin and plugin_caps:
+        if plugin_caps:
             lines += ["", "**已加载扩展命令**"]
             for item in plugin_caps:
                 summary = format_plugin_command_summary(item, empty_text="（无）")

@@ -1077,6 +1077,8 @@ def admin_members_page():
 
 _areas_cache: dict = {"data": None, "ts": 0.0}
 _AREAS_CACHE_TTL = 120.0
+_area_meta_cache: dict = {"data": None, "ts": 0.0, "area": ""}
+_AREA_META_CACHE_TTL = 120.0
 
 
 @admin_router.get("/admin/api/areas")
@@ -1099,6 +1101,50 @@ def admin_areas_list():
         })
     resp = {"ok": True, "areas": items}
     _areas_cache.update(data=resp, ts=now)
+    return JSONResponse(resp)
+
+
+@admin_router.get("/admin/api/areas/{area_id}/meta")
+def admin_area_meta(area_id: str):
+    """返回域的表单辅助数据，如身份组列表。"""
+    resolved_area = area_id.strip() or _resolve_area()
+    if not resolved_area:
+        return JSONResponse({"ok": False, "error": "未找到可用域 ID"})
+
+    now = time.time()
+    if (_area_meta_cache["data"] and _area_meta_cache["area"] == resolved_area
+            and now - _area_meta_cache["ts"] < _AREA_META_CACHE_TTL):
+        return JSONResponse(_area_meta_cache["data"])
+
+    sender = _get_sender()
+    if not sender:
+        return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
+
+    area_info = sender.get_area_info(area=resolved_area)
+    if not isinstance(area_info, dict) or "error" in area_info:
+        err = area_info.get("error") if isinstance(area_info, dict) else "获取域信息失败"
+        return JSONResponse({"ok": False, "error": err or "获取域信息失败"})
+
+    roles = []
+    for role in area_info.get("roleList") or []:
+        role_id = role.get("roleID")
+        if role_id is None:
+            continue
+        roles.append({
+            "id": str(role_id),
+            "name": str(role.get("name", "") or ""),
+            "sort": int(role.get("sort", 0) or 0),
+            "type": int(role.get("type", 0) or 0),
+        })
+    roles.sort(key=lambda item: (-item["sort"], item["name"], item["id"]))
+
+    resp = {
+        "ok": True,
+        "area": resolved_area,
+        "home_page_channel_id": str(area_info.get("homePageChannelId", "") or ""),
+        "roles": roles,
+    }
+    _area_meta_cache.update(data=resp, ts=now, area=resolved_area)
     return JSONResponse(resp)
 
 
