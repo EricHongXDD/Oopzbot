@@ -208,6 +208,33 @@ POST /im/session/v2/sendGimMessage
 | `mentionList[].offset` | 文本偏移；`-1` 表示不按偏移定位 |
 | `content` | @ 文本使用 ` (met){uid}(met)` 格式 |
 
+**Web 端回复消息：**
+
+Web 端发送“回复某条消息”的频道消息时，仍然使用 `v2/sendGimMessage`，引用关系通过 `referenceMessageId` 传递：
+
+```json
+{
+  "message": {
+    "area": "域ID",
+    "channel": "频道ID",
+    "target": "",
+    "clientMessageId": "15位客户端消息ID",
+    "timestamp": "微秒时间戳",
+    "isMentionAll": false,
+    "mentionList": [],
+    "styleTags": [],
+    "referenceMessageId": "被回复的消息ID",
+    "animated": false,
+    "displayName": "",
+    "duration": 0,
+    "content": "回复文本",
+    "attachments": []
+  }
+}
+```
+
+> 回复关系在 `sendGimMessage.message.referenceMessageId` 中体现，不是在表情反应接口中单独传引用字段。
+
 ### 撤回消息
 
 ```
@@ -262,6 +289,124 @@ GET /im/session/v2/messageBefore?area={area}&channel={channel}&size={size}
       "area": "域ID"
     }
   ]
+}
+```
+
+### 消息表情反应
+
+#### 新增 / 取消单条消息表情
+
+```
+POST /im/session/v1/gimReaction
+```
+
+**请求体：**
+
+```json
+{
+  "messageId": "消息ID",
+  "emoji": "😀",
+  "type": "REPLY",
+  "channel": "频道ID",
+  "area": "域ID",
+  "target": "",
+  "anchor": ""
+}
+```
+
+**字段说明：**
+
+| 字段 | 说明 |
+|------|------|
+| `messageId` | 被反应的消息 ID |
+| `emoji` | 表情字符本体。Web 抓包中直接传 Unicode 字符，不是 `:smile:` 这类别名 |
+| `type` | `REPLY` 表示新增反应；`WITHDRAWN` 表示取消反应 |
+| `channel` | 频道 ID |
+| `area` | 域 / 区域 ID |
+| `target` | 抓包样本中始终为空字符串 |
+| `anchor` | 文本消息通常为空；图片 / 贴纸样本中抓到非空值，如 `a8cefa6020c711ef948e22d3a3e3e6e2` |
+
+**取消表情示例：**
+
+```json
+{
+  "messageId": "消息ID",
+  "emoji": "😀",
+  "type": "WITHDRAWN",
+  "channel": "频道ID",
+  "area": "域ID",
+  "target": "",
+  "anchor": ""
+}
+```
+
+**成功响应：**
+
+```json
+{
+  "status": true,
+  "data": true,
+  "message": "",
+  "error": "",
+  "code": ""
+}
+```
+
+**补充：**
+
+- 文本消息与“回复消息”的表情请求体一致，`anchor` 均为空字符串。
+- 图片消息、贴纸 / 动图消息的表情请求体中，`anchor` 可能为非空。
+- 本次 Web 抓包中未观察到 `target` 为非空的样本。
+
+#### 批量查询多条消息的表情反应
+
+```
+POST /im/session/v1/gimReactions
+```
+
+**请求体：**
+
+```json
+[
+  {
+    "messageId": "消息ID1"
+  },
+  {
+    "messageId": "消息ID2"
+  }
+]
+```
+
+**说明：**
+
+- 用于批量查询多条消息当前的表情反应汇总。
+- Web 端会在消息列表加载后批量请求多个 `messageId`。
+
+#### 查询某个表情的反应用户
+
+```
+GET /im/session/v2/gimReactionPersons?messageId={messageId}&emoji={emoji}&channel={channel}&page={page}&pageSize={pageSize}
+```
+
+**参数：**
+
+| 参数 | 说明 |
+|------|------|
+| `messageId` | 消息 ID |
+| `emoji` | 表情字符，需 URL 编码 |
+| `channel` | 频道 ID |
+| `page` | 页码，如 `1` |
+| `pageSize` | 每页数量，如 `4` |
+
+**成功响应示例：**
+
+```json
+{
+  "status": true,
+  "data": [],
+  "message": "",
+  "error": "",
+  "code": ""
 }
 ```
 
@@ -1339,7 +1484,9 @@ GET /general/v1/speech
 | POST | `https://gateway.oopz.cn/im/session/v1/areasUnread` | 区域未读数 |
 | POST | `https://gateway.oopz.cn/im/session/v1/areasMentionUnread` | @ 未读 |
 | POST | `https://gateway.oopz.cn/im/session/v1/saveReadStatus` | 保存已读状态 |
-| POST | `https://gateway.oopz.cn/im/session/v1/gimReactions` | 消息表情反应 |
+| POST | `https://gateway.oopz.cn/im/session/v1/gimReaction` | 新增 / 取消消息表情 |
+| POST | `https://gateway.oopz.cn/im/session/v1/gimReactions` | 批量查询消息表情 |
+| GET | `https://gateway.oopz.cn/im/session/v2/gimReactionPersons?messageId=...&emoji=...&channel=...&page=1&pageSize=4` | 查询某个表情的反应用户 |
 | POST | `https://gateway.oopz.cn/im/session/v1/gimMessageDetails` | 消息详情 |
 | GET | `https://gateway.oopz.cn/im/systemMessage/v1/unreadCount` | 系统消息未读数 |
 | GET | `https://gateway.oopz.cn/im/systemMessage/v1/messageList?offsetTime` | 系统消息列表 |
