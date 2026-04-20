@@ -16,7 +16,7 @@
 
 ## 文档
 
-- [详细文档](https://traceck.online/docs/) — 安装、配置、启动、Docker 部署、Nginx 反向代理
+- [快速开始](docs/quickstart.md) — 安装依赖、配置项目、启动服务
 
 ## 许可证
 
