@@ -2,7 +2,7 @@
 
 基于 [Oopz](https://web.oopz.cn) 平台的多功能聊天机器人，通过 WebSocket 与平台保持连接，支持音乐点播、AI 聊天、插件扩展、Web 播放器、管理后台等能力。
 
-[加入体验域](https://oopz.cn/i/YncsR0)
+[开发交流](https://oopz.cn/i/YncsR0)
 
 ## 功能特性
 
