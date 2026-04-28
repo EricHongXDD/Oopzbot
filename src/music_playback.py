@@ -149,9 +149,11 @@ class PlaybackMixin:
                             continue
 
                         current = self.queue.get_current()
+                        finished_song = None
 
                         if current is not None:
                             logger.info("自动播放监控: 歌曲已播完，清理 current 状态")
+                            finished_song = current
                             self.queue.clear_current()
                             try:
                                 self.queue.clear_play_state()
@@ -160,11 +162,18 @@ class PlaybackMixin:
                             current = None
 
                         queue_length = self.queue.get_queue_length()
-                        if queue_length > 0 and current is None:
+                        if (queue_length > 0 or finished_song is not None) and current is None:
                             if not self._voice_channel_id:
                                 time.sleep(2)
                                 continue
-                            next_song = self.queue.play_next()
+                            dequeue_next = getattr(self, "_dequeue_next_song", None)
+                            if callable(dequeue_next):
+                                next_song, _source = dequeue_next(
+                                    natural_end=finished_song is not None,
+                                    current_song=finished_song,
+                                )
+                            else:
+                                next_song = self.queue.play_next() if queue_length > 0 else None
                             if next_song:
                                 ch = next_song.get("channel") or self._voice_channel_id
                                 ar = next_song.get("area") or self._voice_channel_area

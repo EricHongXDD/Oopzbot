@@ -601,6 +601,14 @@ async def admin_update_config(request: Request):
     if "netease" in applied:
         web_player.reset_netease()
         _set_liked_ids_cache([])
+    if "music" in applied and "default_volume" in applied["music"]:
+        try:
+            volume = cfg.default_music_volume()
+            r = web_player.get_redis()
+            r.set(web_player.KEY_VOLUME, str(volume))
+            r.rpush(web_player.KEY_WEB_COMMANDS, f"volume:{volume}")
+        except Exception as e:
+            logger.debug("Apply default music volume failed: %s", e)
     cfg.refresh_runtime_dependents(set(applied))
 
     if persist and persist_payload:

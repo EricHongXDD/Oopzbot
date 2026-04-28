@@ -62,6 +62,14 @@ def parse_platform_prefix(keyword: str) -> tuple[str, str]:
     return "", keyword
 
 
+def _music_auto_play_enabled() -> bool:
+    try:
+        from web_player_config import MUSIC_CONFIG
+        return bool(MUSIC_CONFIG.get("auto_play_enabled", True))
+    except Exception:
+        return True
+
+
 class MusicHandler(PlaybackMixin):
     """音乐功能处理器。
     队列按域隔离，每个域拥有独立的 QueueManager。
@@ -665,7 +673,9 @@ class MusicHandler(PlaybackMixin):
         next_song = self.queue.play_next()
         if next_song:
             return next_song, "queue"
-        if natural_end and mode == PLAY_MODE_AUTOPLAY:
+        if natural_end and (mode == PLAY_MODE_AUTOPLAY or (
+            mode == PLAY_MODE_LIST and _music_auto_play_enabled()
+        )):
             return self._build_autoplay_song(current_song), PLAY_MODE_AUTOPLAY
         return None, mode
 

@@ -276,6 +276,14 @@ def admin_cookie_name() -> str:
     return "admin_session"
 
 
+def default_music_volume() -> int:
+    try:
+        volume = int(MUSIC_CONFIG.get("default_volume", 50))
+    except (TypeError, ValueError):
+        volume = 50
+    return max(0, min(100, volume))
+
+
 # ---------------------------------------------------------------------------
 # 类型强转 / 校验
 # ---------------------------------------------------------------------------

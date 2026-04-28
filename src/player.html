@@ -833,12 +833,23 @@ body::after{
   const $ = id => document.getElementById(id);
   const _area = window.__OOPZ_AREA__ || '';
   function _api(path){ return _area ? path+(path.includes('?')?'&':'?')+'area='+encodeURIComponent(_area) : path; }
+  function clampVolume(value, fallback){
+    const parsed = parseInt(value, 10);
+    if(Number.isNaN(parsed)) return fallback;
+    return Math.min(100, Math.max(0, parsed));
+  }
+  function renderVolume(value){
+    volume = clampVolume(value, volume);
+    $('volumeFill').style.width=volume+'%';
+    $('volumeThumb').style.left=volume+'%';
+    $('volumePct').textContent=volume+'%';
+  }
 
   let currentId = null;
   let lyrics = [];
   let tLyrics = [];
   let activeLine = -1;
-  let volume = Math.min(100, Math.max(0, parseInt(localStorage.getItem('webVolume'), 10) || 50));
+  let volume = clampVolume(localStorage.getItem('webVolume'), 50);
   let showTrans = false;
   let apiOk = true;
   let lastStatusError = 0;
@@ -847,7 +858,6 @@ body::after{
   let currentDuration = 0;
   let isSeeking = false;
   let volumeDebounce = null;
-  let _savedVolumeApplied = false;
   /** 上次从服务端拿到的进度（秒）及收到时的时间戳，用于本地插值，使歌词与进度条在轮询间隔内平滑更新 */
   let _progressBase = 0;
   let _progressBaseTime = 0;
@@ -979,6 +989,11 @@ body::after{
 
       _lastStatus=d;
 
+      if(d.volume!==undefined && !volumeDebounce){
+        renderVolume(d.volume);
+        localStorage.setItem('webVolume', String(volume));
+      }
+
       if(!d.playing){
         if(currentId!==null){
           currentId=null;lyrics=[];tLyrics=[];activeLine=-1;
@@ -1022,23 +1037,6 @@ body::after{
       badge.querySelector('span').textContent=isLoading?'Loading':isPaused?'Paused':'Playing';
       badge.classList.toggle('paused',isPaused&&!isLoading);
       badge.classList.toggle('loading',isLoading);
-
-      if(d.volume!==undefined && !volumeDebounce){
-        if(!_savedVolumeApplied){
-          _savedVolumeApplied=true;
-          const saved=Math.min(100,Math.max(0,parseInt(localStorage.getItem('webVolume'),10)||50));
-          volume=saved;
-          $('volumeFill').style.width=volume+'%';
-          $('volumeThumb').style.left=volume+'%';
-          $('volumePct').textContent=volume+'%';
-          fetch(_api('/api/control'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'volume',value:volume})});
-        }else{
-          volume=d.volume;
-          $('volumeFill').style.width=volume+'%';
-          $('volumeThumb').style.left=volume+'%';
-          $('volumePct').textContent=volume+'%';
-        }
-      }
 
       if(isLoading){
         _progressBase = 0;
@@ -1265,10 +1263,7 @@ body::after{
     function setVol(e){
       const rect=track.getBoundingClientRect();
       let pct=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));
-      volume=Math.round(pct*100);
-      $('volumeFill').style.width=volume+'%';
-      $('volumeThumb').style.left=volume+'%';
-      $('volumePct').textContent=volume+'%';
+      renderVolume(Math.round(pct*100));
     }
     function sendVolume(){
       clearTimeout(volumeDebounce);
@@ -1481,6 +1476,7 @@ body::after{
   }
   setInterval(tickProgress, 150);
 
+  renderVolume(volume);
   fetchStatus();
   fetchQueue();
   setInterval(fetchStatus,1000);

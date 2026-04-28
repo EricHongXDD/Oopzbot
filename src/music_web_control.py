@@ -116,6 +116,11 @@ class WebControlExecutor:
         except (ValueError, IndexError) as e:
             logger.debug(f"解析 volume 命令失败 ({cmd}): {e}")
             return
+        vol = max(0, min(100, vol))
+        try:
+            self.h.queue.redis.set("music:volume", str(vol))
+        except Exception as e:
+            logger.debug(f"Persist volume failed: {e}")
         if not (self.h.voice and self.h.voice.available):
             return
         if not self.h.voice.set_volume(vol):

@@ -104,6 +104,19 @@ started_at: float = time.time()
 liked_ids_cache: list = []
 
 KEY_WEB_COMMANDS = "music:web_commands"
+KEY_VOLUME = "music:volume"
+
+
+def _normalize_volume(value, fallback: int | None = None) -> int:
+    if fallback is None:
+        fallback = cfg.default_music_volume()
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    try:
+        volume = int(value)
+    except (TypeError, ValueError):
+        volume = fallback
+    return max(0, min(100, volume))
 
 
 def get_redis() -> redis.Redis:
@@ -253,9 +266,10 @@ def execute_control_action(action: str, body: dict, redis_client: redis.Redis, a
         redis_client.rpush(KEY_WEB_COMMANDS, f"seek:{seek_time}")
         return {"ok": True}
     if action == "volume":
-        vol = body.get("value", 50)
+        vol = _normalize_volume(body.get("value"))
+        redis_client.set(KEY_VOLUME, str(vol))
         redis_client.rpush(KEY_WEB_COMMANDS, f"volume:{vol}")
-        return {"ok": True}
+        return {"ok": True, "volume": vol}
     return {"ok": False, "error": f"未知操作: {action}"}
 
 
@@ -399,11 +413,12 @@ def api_status(area: str = Query("", description="域 ID，用于多域隔离"))
         pipe = r.pipeline(transaction=False)
         pipe.get(current_key)
         pipe.get(ps_key)
-        pipe.get("music:volume")
+        pipe.get(KEY_VOLUME)
         current_raw, play_state_raw, vol_raw = pipe.execute()
+        volume = _normalize_volume(vol_raw)
 
         if not current_raw:
-            return JSONResponse({"playing": False})
+            return JSONResponse({"playing": False, "volume": volume})
 
         current = json.loads(current_raw)
         progress = 0.0
@@ -434,8 +449,6 @@ def api_status(area: str = Query("", description="域 ID，用于多域隔离"))
                 progress = float(ps.get("pause_elapsed", 0) or 0)
             elif start and duration:
                 progress = time.time() - start
-
-        volume = int(vol_raw) if vol_raw else 50
 
         song_id = current.get("song_id") or current.get("id")
         dur_text = current.get("durationText", "")

@@ -18,16 +18,22 @@ from music import (
     PLAY_MODE_SHUFFLE,
     PLAY_MODE_SINGLE,
 )
+import web_player_config as cfg
 
 
 class MusicModeTest(unittest.TestCase):
     def setUp(self) -> None:
+        self._music_config = dict(cfg.MUSIC_CONFIG)
         self.handler = MusicHandler.__new__(MusicHandler)
         self.handler.queue = Mock()
         self.handler.netease = Mock()
         self.handler._liked_ids_cache = []
         self.handler._voice_channel_id = "voice-1"
         self.handler._voice_channel_area = "area-1"
+
+    def tearDown(self) -> None:
+        cfg.MUSIC_CONFIG.clear()
+        cfg.MUSIC_CONFIG.update(self._music_config)
 
     def test_get_play_mode_defaults_to_list(self) -> None:
         self.handler.queue.get_play_mode.return_value = None
@@ -96,6 +102,49 @@ class MusicModeTest(unittest.TestCase):
         self.assertEqual(next_song["name"], "喜欢歌曲")
         self.assertEqual(next_song["channel"], "text-1")
         self.assertEqual(next_song["area"], "area-1")
+
+    def test_configured_auto_play_randomizes_after_queue_ends(self) -> None:
+        cfg.MUSIC_CONFIG["auto_play_enabled"] = True
+        self.handler.queue.get_play_mode.return_value = PLAY_MODE_LIST
+        self.handler.queue.play_next.return_value = None
+        self.handler.netease.get_user_id.return_value = 100
+        self.handler.netease.get_liked_ids.return_value = [1]
+        self.handler.netease.summarize_by_id.return_value = {
+            "code": "success",
+            "data": {
+                "id": 1,
+                "name": "auto song",
+                "artists": "artist",
+                "album": "album",
+                "url": "https://example.com/song.mp3",
+                "cover": "",
+                "duration": 120000,
+                "durationText": "2:00",
+            },
+        }
+
+        next_song, source = self.handler._dequeue_next_song(
+            natural_end=True,
+            current_song={"channel": "text-1", "area": "area-1", "user": "user-1"},
+        )
+
+        self.assertEqual(source, PLAY_MODE_AUTOPLAY)
+        self.assertEqual(next_song["name"], "auto song")
+        self.assertEqual(next_song["channel"], "text-1")
+
+    def test_disabled_auto_play_stops_when_queue_is_empty(self) -> None:
+        cfg.MUSIC_CONFIG["auto_play_enabled"] = False
+        self.handler.queue.get_play_mode.return_value = PLAY_MODE_LIST
+        self.handler.queue.play_next.return_value = None
+
+        next_song, source = self.handler._dequeue_next_song(
+            natural_end=True,
+            current_song={"channel": "text-1", "area": "area-1", "user": "user-1"},
+        )
+
+        self.assertIsNone(next_song)
+        self.assertEqual(source, PLAY_MODE_LIST)
+        self.handler.netease.get_user_id.assert_not_called()
 
     def test_play_song_choice_reuses_search_result_without_fetching_detail(self) -> None:
         platform = Mock()
