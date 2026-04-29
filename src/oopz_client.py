@@ -99,6 +99,18 @@ class OopzClient:
         if self._ws:
             self._ws.close()
 
+    def update_credentials(self, person_uid: str, device_id: str, jwt_token: str, reconnect: bool = True) -> None:
+        """热更新认证凭据；关闭当前连接后由重连循环使用新身份。"""
+        self._person_id = str(person_uid or "")
+        self._device_id = str(device_id or "")
+        self._jwt_token = str(jwt_token or "")
+        self._hb_body = json.dumps({"person": self._person_id})
+        if reconnect and self._ws:
+            try:
+                self._ws.close()
+            except Exception:
+                logger.debug("热更新 OOPZ 凭据时关闭旧 WebSocket 失败", exc_info=True)
+
     # ------------------------------------------------------------------
     # 内部实现
     # ------------------------------------------------------------------

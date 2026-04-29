@@ -165,6 +165,67 @@
       await check();
     }
 
+    function setOopzLoginStatus(text, variant) {
+      const element = AdminShell.byId("cfg_oopz_login_status");
+      if (!element) {
+        return;
+      }
+      const state = variant || "neutral";
+      element.textContent = text;
+      element.classList.toggle("is-error", state === "error");
+      element.classList.toggle("is-success", state === "success");
+    }
+
+    function setOopzLoginButtonLoading(loading) {
+      const button = AdminShell.byId("cfg_oopz_login_btn");
+      if (!button) {
+        return;
+      }
+      button.disabled = !!loading;
+      button.textContent = loading ? "登录中..." : "登录并获取";
+    }
+
+    function formatOopzCredentialSummary(credentials) {
+      const c = credentials || {};
+      const expires = c.expires_at ? "；Token 到期：" + c.expires_at : "";
+      return "已获取 UID " + (c.person_uid || "-") + "，设备 " + (c.device_id || "-") + expires;
+    }
+
+    async function loginOopzAccount() {
+      const phone = val("cfg_oopz_login_phone");
+      const passwordElement = AdminShell.byId("cfg_oopz_login_password");
+      const password = passwordElement ? passwordElement.value : "";
+      if (!phone || !password) {
+        setOopzLoginStatus("请输入 OOPZ 账号和密码", "error");
+        return;
+      }
+
+      setOopzLoginButtonLoading(true);
+      setOopzLoginStatus("正在登录 OOPZ...", "neutral");
+      setPageState("OOPZ 登录中", "warning");
+
+      try {
+        const data = await AdminShell.req("/admin/api/oopz/login", {
+          method: "POST",
+          body: JSON.stringify({ phone, password }),
+        });
+        if (passwordElement) {
+          passwordElement.value = "";
+        }
+        const saved = Array.isArray(data.saved) && data.saved.length > 0 ? data.saved.join("、") : "运行时";
+        setOopzLoginStatus(formatOopzCredentialSummary(data.credentials), "success");
+        AdminShell.showMessage("msg", "OOPZ 凭据已保存到 " + saved + "，建议重启后完整生效");
+        setPageState("OOPZ 登录成功", "success");
+        await loadConfig();
+      } catch (error) {
+        setOopzLoginStatus(error.message || "OOPZ 登录失败", "error");
+        AdminShell.showMessage("msg", error.message || "OOPZ 登录失败", true);
+        setPageState("OOPZ 登录失败", "error");
+      } finally {
+        setOopzLoginButtonLoading(false);
+      }
+    }
+
     async function loadConfig() {
       const data = await AdminShell.req("/admin/api/config");
       const config = data.config || {};
