@@ -174,7 +174,11 @@ class MusicModeTest(unittest.TestCase):
             "user-1",
         )
 
-        platform.get_song_url.assert_called_once_with(1)
+        platform.get_song_url.assert_called_once_with(
+            1,
+            expected_duration_ms=222000,
+            song_name="稻香",
+        )
         platform.summarize_by_id.assert_not_called()
         committed_song = self.handler._commit_song_request.call_args.args[0]
         self.assertEqual(committed_song["url"], "https://example.com/song.mp3")

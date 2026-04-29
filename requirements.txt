@@ -5,6 +5,7 @@ cryptography>=42,<48
 websocket-client>=1.8,<2
 python-socks>=2.5,<3
 pillow>=10,<13
+qrcode[pil]>=7.4,<9
 redis>=5.0,<8
 fastapi>=0.110,<1
 uvicorn[standard]>=0.30,<1

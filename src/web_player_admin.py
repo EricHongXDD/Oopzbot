@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
+import io
 import json
 import os
 import secrets
@@ -11,10 +13,24 @@ import string
 import sys
 import time
 from collections import deque
+from http.cookies import SimpleCookie
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+
+try:
+    import requests
+    RequestsException = requests.RequestException
+except Exception:
+    requests = None
+    RequestsException = RuntimeError
+
+try:
+    import qrcode
+except Exception:
+    qrcode = None
 
 from database import DB_PATH, MessageStatsDB, ReminderDB, ScheduledMessageDB, SongCache, Statistics, db_connection
 from logger_config import get_logger
@@ -265,6 +281,491 @@ def _get_plugin_runtime():
 def _set_liked_ids_cache(value: list) -> None:
     import web_player
     web_player.liked_ids_cache = value
+
+
+def _normalize_netease_base_url(raw: object = "") -> str:
+    """校验并规范化后台传入的网易云 API 地址。"""
+    value = str(raw or cfg.NETEASE_CLOUD.get("base_url") or "").strip().rstrip("/")
+    if not value:
+        raise ValueError("网易云 API 地址为空")
+    if len(value) > 300:
+        raise ValueError("网易云 API 地址过长")
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("网易云 API 地址必须是 http/https URL")
+    return value
+
+
+def _netease_timestamp_params(extra: dict | None = None) -> dict:
+    """附加时间戳参数，避免网易云登录接口被缓存。"""
+    stamp = str(int(time.time() * 1000))
+    params = {
+        "timestamp": stamp,
+        "timerstamp": stamp,
+    }
+    if extra:
+        params.update(extra)
+    return params
+
+
+def _netease_api_get(
+    base_url: str,
+    path: str,
+    params: dict | None = None,
+    headers: dict | None = None,
+) -> tuple[dict, requests.Response]:
+    """请求本地/远端 NeteaseCloudMusicApi 并返回 JSON。"""
+    if requests is None:
+        raise RuntimeError("缺少 requests 依赖，请先安装 requirements.txt")
+    request_headers = {"Cache-Control": "no-cache"}
+    if headers:
+        request_headers.update(headers)
+    response = requests.get(
+        f"{base_url}{path}",
+        params=params or {},
+        headers=request_headers,
+        timeout=10,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict):
+        raise ValueError("网易云 API 返回格式异常")
+    return data, response
+
+
+def _netease_api_post(
+    base_url: str,
+    path: str,
+    data: dict | None = None,
+    headers: dict | None = None,
+) -> tuple[dict, requests.Response]:
+    """POST 请求网易云 API；用于避免把长 Cookie 暴露在查询串里。"""
+    if requests is None:
+        raise RuntimeError("缺少 requests 依赖，请先安装 requirements.txt")
+    request_headers = {"Cache-Control": "no-cache"}
+    if headers:
+        request_headers.update(headers)
+    response = requests.post(
+        f"{base_url}{path}",
+        data=data or {},
+        headers=request_headers,
+        timeout=10,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("网易云 API 返回格式异常")
+    return payload, response
+
+
+def _netease_response_data(payload: dict) -> dict:
+    """兼容不同网易云 API 分支的 data 包装结构。"""
+    data = payload.get("data")
+    return data if isinstance(data, dict) else {}
+
+
+def _netease_qr_code(payload: dict) -> int:
+    """从扫码检查响应中提取状态码。"""
+    status_codes = {800, 801, 802, 803}
+    values = (_netease_response_data(payload).get("code"), payload.get("code"))
+    parsed_values = []
+    for value in values:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed in status_codes:
+            return parsed
+        parsed_values.append(parsed)
+    if parsed_values:
+        return parsed_values[0]
+    return 0
+
+
+def _cookie_from_response(payload: dict, response: requests.Response) -> str:
+    """优先取接口 JSON 中的 Cookie，回退到响应 Set-Cookie。"""
+    nested = _netease_response_data(payload)
+    cookie = str(payload.get("cookie") or nested.get("cookie") or "").strip()
+    if cookie:
+        logger.debug("网易云扫码登录 Cookie 提取成功: source=json %s", _cookie_debug_summary(cookie))
+        return cookie
+
+    jar = getattr(response, "cookies", None)
+    if jar:
+        try:
+            pairs = [f"{item.name}={item.value}" for item in jar]
+            cookie = "; ".join(pair for pair in pairs if pair)
+            if cookie:
+                logger.debug("网易云扫码登录 Cookie 提取成功: source=response %s", _cookie_debug_summary(cookie))
+                return cookie
+        except Exception:
+            logger.debug("解析网易云登录响应 CookieJar 失败", exc_info=True)
+
+    header = response.headers.get("set-cookie", "") if hasattr(response, "headers") else ""
+    cookie = header.strip()
+    if cookie:
+        logger.debug("网易云扫码登录 Cookie 提取成功: source=set-cookie %s", _cookie_debug_summary(cookie))
+    else:
+        logger.debug("网易云扫码登录响应中未找到可用 Cookie")
+    return cookie
+
+
+def _netease_login_message(payload: dict, default: str = "") -> str:
+    """兼容 message/msg/nested message 三种提示字段。"""
+    nested = _netease_response_data(payload)
+    return str(
+        payload.get("message")
+        or payload.get("msg")
+        or nested.get("message")
+        or nested.get("msg")
+        or default
+    )
+
+
+def _extract_netease_profile(payload: dict) -> Optional[dict]:
+    """从账号接口返回中提取昵称和用户 ID。"""
+    nested = _netease_response_data(payload)
+    profile = payload.get("profile") or nested.get("profile") or {}
+    account = payload.get("account") or nested.get("account") or {}
+    if not isinstance(profile, dict):
+        profile = {}
+    if not isinstance(account, dict):
+        account = {}
+
+    user_id = (
+        profile.get("userId")
+        or profile.get("userid")
+        or profile.get("id")
+        or account.get("id")
+        or account.get("userId")
+    )
+    if not user_id:
+        return None
+
+    nickname = (
+        profile.get("nickname")
+        or profile.get("name")
+        or account.get("userName")
+        or account.get("nickname")
+        or ""
+    )
+    return {
+        "user_id": str(user_id),
+        "nickname": str(nickname or ""),
+        "avatar_url": str(profile.get("avatarUrl") or profile.get("avatarUrlHttps") or ""),
+    }
+
+
+def _netease_account_status(base_url: str, cookie: str) -> dict:
+    """使用 Cookie 查询当前网易云登录账号。"""
+    cookie = (cookie or "").strip()
+    if not cookie:
+        logger.debug("网易云账号状态查询跳过: 未配置 Cookie")
+        return {"ok": True, "logged_in": False, "message": "未配置网易云 Cookie"}
+
+    logger.debug("网易云账号状态查询开始: base_url=%s %s", base_url, _cookie_debug_summary(cookie))
+    requests_to_try = (
+        (
+            "POST",
+            "/login/status",
+            _netease_timestamp_params({"cookie": cookie}),
+        ),
+        (
+            "GET",
+            "/user/account",
+            _netease_timestamp_params(),
+        ),
+    )
+    last_message = ""
+    for method, path, params in requests_to_try:
+        try:
+            logger.debug("网易云账号状态请求: method=%s path=%s", method, path)
+            if method == "POST":
+                payload, _ = _netease_api_post(base_url, path, data=params, headers={"Cookie": cookie})
+            else:
+                payload, _ = _netease_api_get(base_url, path, params=params, headers={"Cookie": cookie})
+        except Exception as exc:
+            last_message = str(exc)
+            logger.debug("网易云账号状态请求失败 (%s %s): %s", method, path, exc)
+            continue
+
+        nested = _netease_response_data(payload)
+        logger.debug(
+            "网易云账号状态接口返回: path=%s code=%s data_code=%s message=%s",
+            path,
+            payload.get("code"),
+            nested.get("code") if isinstance(nested, dict) else None,
+            _netease_login_message(payload, ""),
+        )
+        profile = _extract_netease_profile(payload)
+        if profile:
+            logger.debug("网易云账号状态查询成功: path=%s %s", path, _debug_profile_text(profile))
+            return {
+                "ok": True,
+                "logged_in": True,
+                "profile": profile,
+                "message": "网易云账号已登录",
+            }
+        last_message = _netease_login_message(payload, last_message)
+        logger.debug("网易云账号状态未解析到 profile: path=%s message=%s", path, last_message)
+
+    logger.debug("网易云账号状态查询未登录: message=%s", last_message)
+    return {
+        "ok": True,
+        "logged_in": False,
+        "message": last_message or "Cookie 未登录或已过期",
+    }
+
+
+_BILIBILI_LOGIN_BASE = "https://passport.bilibili.com"
+_BILIBILI_API_BASE = "https://api.bilibili.com"
+_BILIBILI_QR_GENERATE_PATH = "/x/passport-login/web/qrcode/generate"
+_BILIBILI_QR_POLL_PATH = "/x/passport-login/web/qrcode/poll"
+_BILIBILI_NAV_PATH = "/x/web-interface/nav"
+_BILIBILI_COOKIE_NAMES = (
+    "SESSDATA",
+    "bili_jct",
+    "DedeUserID",
+    "DedeUserID__ckMd5",
+    "sid",
+)
+
+
+def _make_qr_data_uri(content: str) -> str:
+    """把登录 URL 渲染为前端可直接展示的二维码 PNG。"""
+    if qrcode is None:
+        raise RuntimeError("缺少 qrcode 依赖，请先安装 requirements.txt")
+    image = qrcode.make(content)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def _bilibili_api_get(path: str, params: dict | None = None) -> tuple[dict, requests.Response]:
+    """请求 B 站 Web 扫码登录接口并返回 JSON。"""
+    if requests is None:
+        raise RuntimeError("缺少 requests 依赖，请先安装 requirements.txt")
+    response = requests.get(
+        f"{_BILIBILI_LOGIN_BASE}{path}",
+        params=params or {},
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://www.bilibili.com/",
+            "Cache-Control": "no-cache",
+        },
+        timeout=10,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict):
+        raise ValueError("B 站 API 返回格式异常")
+    return data, response
+
+
+def _bilibili_account_api_get(path: str, headers: dict | None = None) -> tuple[dict, requests.Response]:
+    """请求 B 站 Web API，用于读取已登录账号信息。"""
+    if requests is None:
+        raise RuntimeError("缺少 requests 依赖，请先安装 requirements.txt")
+    request_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://www.bilibili.com/",
+        "Cache-Control": "no-cache",
+    }
+    if headers:
+        request_headers.update(headers)
+    response = requests.get(
+        f"{_BILIBILI_API_BASE}{path}",
+        headers=request_headers,
+        timeout=10,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict):
+        raise ValueError("B 站 API 返回格式异常")
+    return data, response
+
+
+def _bilibili_response_data(payload: dict) -> dict:
+    """兼容 B 站响应中的 data 包装结构。"""
+    data = payload.get("data")
+    return data if isinstance(data, dict) else {}
+
+
+def _bilibili_login_message(payload: dict, default: str = "") -> str:
+    """提取 B 站扫码接口返回的提示。"""
+    nested = _bilibili_response_data(payload)
+    return str(
+        nested.get("message")
+        or payload.get("message")
+        or payload.get("msg")
+        or default
+    )
+
+
+def _bilibili_qr_code(payload: dict) -> int:
+    """从 B 站扫码轮询响应中提取状态码。"""
+    nested = _bilibili_response_data(payload)
+    for value in (nested.get("code"), payload.get("code")):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return -1
+
+
+def _cookie_pairs_from_response(response: requests.Response, allowed_names: tuple[str, ...] = ()) -> str:
+    """从 CookieJar 或 Set-Cookie 头中整理出可配置的 Cookie 字符串。"""
+    allowed = set(allowed_names)
+    pairs: list[str] = []
+    jar = getattr(response, "cookies", None)
+    if jar:
+        try:
+            for item in jar:
+                name = getattr(item, "name", "")
+                value = getattr(item, "value", "")
+                if name and value and (not allowed or name in allowed):
+                    pairs.append(f"{name}={value}")
+        except Exception:
+            logger.debug("解析登录响应 CookieJar 失败", exc_info=True)
+    if pairs:
+        return "; ".join(pairs)
+
+    header = response.headers.get("set-cookie", "") if hasattr(response, "headers") else ""
+    if header:
+        try:
+            cookie = SimpleCookie()
+            cookie.load(header)
+            for name, morsel in cookie.items():
+                if morsel.value and (not allowed or name in allowed):
+                    pairs.append(f"{name}={morsel.value}")
+        except Exception:
+            logger.debug("解析 Set-Cookie 头失败", exc_info=True)
+    return "; ".join(pairs)
+
+
+def _mask_debug_token(value: str, prefix: int = 6, suffix: int = 4) -> str:
+    """日志中遮罩 token/key，避免泄露可复用凭据。"""
+    text = str(value or "")
+    if not text:
+        return "-"
+    if len(text) <= prefix + suffix:
+        return "*" * len(text)
+    return f"{text[:prefix]}...{text[-suffix:]}"
+
+
+def _cookie_debug_summary(cookie: str) -> str:
+    """生成不含 Cookie 值的调试摘要。"""
+    text = (cookie or "").strip()
+    names: list[str] = []
+    if text:
+        try:
+            parsed = SimpleCookie()
+            parsed.load(text)
+            names = [name for name, morsel in parsed.items() if morsel.value]
+        except Exception:
+            names = []
+        if not names:
+            for item in text.split(";"):
+                name = item.split("=", 1)[0].strip()
+                if name:
+                    names.append(name)
+    names_text = ",".join(names) if names else "-"
+    return f"len={len(text)} names={names_text}"
+
+
+def _debug_profile_text(profile: Optional[dict]) -> str:
+    """生成账号资料调试文本。"""
+    if not profile:
+        return "profile=-"
+    return "nickname=%s uid=%s" % (
+        profile.get("nickname") or "",
+        profile.get("user_id") or "",
+    )
+
+
+def _bilibili_cookie_from_poll(payload: dict, response: requests.Response) -> str:
+    """优先取 Set-Cookie，回退到跨域登录 URL 中的 Cookie 参数。"""
+    cookie = _cookie_pairs_from_response(response, _BILIBILI_COOKIE_NAMES)
+    if cookie:
+        logger.debug("B 站扫码登录 Cookie 提取成功: source=response %s", _cookie_debug_summary(cookie))
+        return cookie
+
+    login_url = str(_bilibili_response_data(payload).get("url") or "").strip()
+    if not login_url:
+        logger.debug("B 站扫码登录未拿到跨域登录 URL，无法回退提取 Cookie")
+        return ""
+    try:
+        query = parse_qs(urlparse(login_url).query)
+    except Exception:
+        logger.debug("B 站扫码登录 URL 解析失败，无法回退提取 Cookie", exc_info=True)
+        return ""
+    pairs = []
+    for name in _BILIBILI_COOKIE_NAMES:
+        values = query.get(name)
+        if values and values[0]:
+            pairs.append(f"{name}={values[0]}")
+    cookie = "; ".join(pairs)
+    if cookie:
+        logger.debug("B 站扫码登录 Cookie 提取成功: source=url %s", _cookie_debug_summary(cookie))
+    else:
+        logger.debug("B 站扫码登录 URL 中未找到可用 Cookie 字段")
+    return cookie
+
+
+def _extract_bilibili_profile(payload: dict) -> Optional[dict]:
+    """从 B 站导航栏接口返回中提取昵称和 UID。"""
+    data = _bilibili_response_data(payload)
+    if not isinstance(data, dict) or not data.get("isLogin"):
+        return None
+    user_id = data.get("mid") or data.get("uid")
+    if not user_id:
+        return None
+    return {
+        "user_id": str(user_id),
+        "nickname": str(data.get("uname") or data.get("name") or ""),
+        "avatar_url": str(data.get("face") or ""),
+    }
+
+
+def _bilibili_account_status(cookie: str) -> dict:
+    """使用 Cookie 查询当前 B 站登录账号。"""
+    cookie = (cookie or "").strip()
+    if not cookie:
+        logger.debug("B 站账号状态查询跳过: 未配置 Cookie")
+        return {"ok": True, "logged_in": False, "message": "未配置 B 站 Cookie"}
+
+    logger.debug("B 站账号状态查询开始: %s", _cookie_debug_summary(cookie))
+    payload, _ = _bilibili_account_api_get(
+        _BILIBILI_NAV_PATH,
+        headers={"Cookie": cookie},
+    )
+    data = _bilibili_response_data(payload)
+    logger.debug(
+        "B 站账号状态接口返回: code=%s isLogin=%s message=%s",
+        payload.get("code"),
+        data.get("isLogin") if isinstance(data, dict) else None,
+        _bilibili_login_message(payload, ""),
+    )
+    profile = _extract_bilibili_profile(payload)
+    if profile:
+        logger.debug("B 站账号状态查询成功: %s", _debug_profile_text(profile))
+        return {
+            "ok": True,
+            "logged_in": True,
+            "profile": profile,
+            "message": "B 站账号已登录",
+        }
+
+    message = _bilibili_login_message(payload, "Cookie 未登录或已过期")
+    logger.debug("B 站账号状态查询未登录: message=%s", message)
+    return {"ok": True, "logged_in": False, "message": message}
 
 
 _ADMIN_SHELL_TEMPLATE: string.Template | None = None
@@ -701,6 +1202,7 @@ async def admin_update_config(request: Request):
     updates = body.get("updates", {})
     persist = bool(body.get("persist", True))
     applied, errors, persist_payload = cfg.apply_config_updates(updates)
+    music_runtime = {}
 
     import web_player
     if "redis" in applied:
@@ -708,6 +1210,12 @@ async def admin_update_config(request: Request):
     if "netease" in applied:
         web_player.reset_netease()
         _set_liked_ids_cache([])
+    if {"netease", "qq_music", "bilibili_music"} & set(applied):
+        try:
+            music_runtime = web_player.refresh_music_platforms()
+        except Exception as exc:
+            logger.exception("刷新音乐平台运行时失败")
+            errors.append(f"音乐平台刷新失败: {exc}")
     if "music" in applied and "default_volume" in applied["music"]:
         try:
             volume = cfg.default_music_volume()
@@ -729,8 +1237,340 @@ async def admin_update_config(request: Request):
         "config": cfg.config_snapshot(),
         "runtime": {
             "music_area": _music_area_context(),
+            "music_platforms": music_runtime,
         },
     })
+
+
+@admin_router.post("/admin/api/netease/login/qr")
+async def admin_netease_login_qr(request: Request):
+    """创建网易云扫码登录二维码。"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    try:
+        base_url = _normalize_netease_base_url(body.get("base_url"))
+        logger.debug("网易云扫码登录二维码刷新请求开始: base_url=%s", base_url)
+        key_payload, _ = _netease_api_get(
+            base_url,
+            "/login/qr/key",
+            params=_netease_timestamp_params(),
+        )
+        key_data = _netease_response_data(key_payload)
+        unikey = str(key_data.get("unikey") or key_payload.get("unikey") or "").strip()
+        if not unikey:
+            message = _netease_login_message(key_payload, "二维码 key 获取失败")
+            logger.debug(
+                "网易云扫码登录二维码 key 获取失败: code=%s message=%s",
+                key_payload.get("code"),
+                message,
+            )
+            return JSONResponse({"ok": False, "error": message}, status_code=502)
+
+        qr_payload, _ = _netease_api_get(
+            base_url,
+            "/login/qr/create",
+            params=_netease_timestamp_params({
+                "key": unikey,
+                "qrimg": "true",
+            }),
+        )
+        qr_data = _netease_response_data(qr_payload)
+        qrimg = str(qr_data.get("qrimg") or qr_payload.get("qrimg") or "").strip()
+        qrurl = str(qr_data.get("qrurl") or qr_payload.get("qrurl") or "").strip()
+        if qrimg and not qrimg.startswith("data:"):
+            qrimg = f"data:image/png;base64,{qrimg}"
+        if not qrimg and not qrurl:
+            message = _netease_login_message(qr_payload, "二维码生成失败")
+            logger.debug(
+                "网易云扫码登录二维码响应缺少字段: key=%s qrimg_present=%s qrurl_present=%s message=%s",
+                _mask_debug_token(unikey),
+                bool(qrimg),
+                bool(qrurl),
+                message,
+            )
+            return JSONResponse({"ok": False, "error": message}, status_code=502)
+
+        logger.debug(
+            "网易云扫码登录二维码刷新成功: key=%s qrimg_len=%s qrurl_len=%s",
+            _mask_debug_token(unikey),
+            len(qrimg),
+            len(qrurl),
+        )
+        return JSONResponse({
+            "ok": True,
+            "base_url": base_url,
+            "key": unikey,
+            "qrimg": qrimg,
+            "qrurl": qrurl,
+            "message": "二维码已刷新",
+        })
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except RequestsException as exc:
+        logger.warning("网易云扫码登录二维码请求失败: %s", exc)
+        return JSONResponse({"ok": False, "error": f"网易云 API 请求失败: {exc}"}, status_code=502)
+    except Exception as exc:
+        logger.exception("创建网易云扫码登录二维码失败")
+        return JSONResponse({"ok": False, "error": f"创建二维码失败: {exc}"}, status_code=500)
+
+
+@admin_router.post("/admin/api/netease/login/qr/check")
+async def admin_netease_login_qr_check(request: Request):
+    """检查网易云扫码登录状态，成功时返回 Cookie。"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    key = str(body.get("key") or "").strip()
+    if not key:
+        return JSONResponse({"ok": False, "error": "二维码 key 不能为空"}, status_code=400)
+
+    try:
+        base_url = _normalize_netease_base_url(body.get("base_url"))
+        logger.debug("网易云扫码登录轮询开始: key=%s base_url=%s", _mask_debug_token(key), base_url)
+        payload, response = _netease_api_get(
+            base_url,
+            "/login/qr/check",
+            params=_netease_timestamp_params({"key": key}),
+        )
+        code = _netease_qr_code(payload)
+        message = _netease_login_message(payload)
+        status_map = {
+            800: "expired",
+            801: "waiting",
+            802: "scanned",
+            803: "success",
+        }
+        status = status_map.get(code, "unknown")
+        logger.debug(
+            "网易云扫码登录轮询结果: key=%s code=%s status=%s message=%s",
+            _mask_debug_token(key),
+            code,
+            status,
+            message,
+        )
+        result = {
+            "ok": True,
+            "base_url": base_url,
+            "code": code,
+            "status": status,
+            "message": message,
+        }
+        if code == 803:
+            cookie = _cookie_from_response(payload, response)
+            if not cookie:
+                return JSONResponse(
+                    {"ok": False, "error": "扫码成功但网易云 API 未返回 Cookie"},
+                    status_code=502,
+                )
+            result["cookie"] = cookie
+            try:
+                account_status = _netease_account_status(base_url, cookie)
+                if account_status.get("logged_in"):
+                    result["profile"] = account_status.get("profile")
+                    logger.debug(
+                        "网易云扫码登录成功并识别账号: key=%s %s",
+                        _mask_debug_token(key),
+                        _debug_profile_text(account_status.get("profile")),
+                    )
+                else:
+                    result["profile_message"] = account_status.get("message", "")
+                    logger.debug(
+                        "网易云扫码登录成功但账号未识别: key=%s message=%s",
+                        _mask_debug_token(key),
+                        result["profile_message"],
+                    )
+            except Exception as exc:
+                logger.debug("网易云扫码成功后查询账号信息失败: %s", exc)
+                result["profile_message"] = f"账号信息查询失败: {exc}"
+            result["message"] = message or "登录成功"
+        return JSONResponse(result)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except RequestsException as exc:
+        logger.warning("网易云扫码登录状态检查失败: %s", exc)
+        return JSONResponse({"ok": False, "error": f"网易云 API 请求失败: {exc}"}, status_code=502)
+    except Exception as exc:
+        logger.exception("检查网易云扫码登录状态失败")
+        return JSONResponse({"ok": False, "error": f"检查登录状态失败: {exc}"}, status_code=500)
+
+
+@admin_router.get("/admin/api/netease/account")
+def admin_netease_account():
+    """返回当前配置 Cookie 对应的网易云账号信息。"""
+    try:
+        base_url = _normalize_netease_base_url(cfg.NETEASE_CLOUD.get("base_url"))
+        cookie = str(cfg.NETEASE_CLOUD.get("cookie") or "")
+        logger.debug("网易云账号状态接口请求: base_url=%s %s", base_url, _cookie_debug_summary(cookie))
+        status = _netease_account_status(base_url, cookie)
+        if status.get("logged_in"):
+            logger.debug("网易云账号状态接口响应: logged_in=True %s", _debug_profile_text(status.get("profile")))
+        else:
+            logger.debug("网易云账号状态接口响应: logged_in=False message=%s", status.get("message", ""))
+        return JSONResponse(status)
+    except ValueError as exc:
+        return JSONResponse({"ok": True, "logged_in": False, "message": str(exc)})
+    except RequestsException as exc:
+        logger.warning("网易云账号状态查询失败: %s", exc)
+        return JSONResponse({"ok": True, "logged_in": False, "message": f"网易云 API 请求失败: {exc}"})
+    except Exception as exc:
+        logger.warning("网易云账号状态查询异常: %s", exc, exc_info=True)
+        return JSONResponse({"ok": True, "logged_in": False, "message": f"账号状态查询失败: {exc}"})
+
+
+@admin_router.post("/admin/api/bilibili/login/qr")
+async def admin_bilibili_login_qr():
+    """创建 B 站扫码登录二维码。"""
+    try:
+        logger.debug("B 站扫码登录二维码刷新请求开始")
+        payload, _ = _bilibili_api_get(_BILIBILI_QR_GENERATE_PATH)
+        if int(payload.get("code", -1)) != 0:
+            message = _bilibili_login_message(payload, "二维码生成失败")
+            logger.debug("B 站扫码登录二维码刷新失败: code=%s message=%s", payload.get("code"), message)
+            return JSONResponse({"ok": False, "error": message}, status_code=502)
+
+        data = _bilibili_response_data(payload)
+        key = str(data.get("qrcode_key") or "").strip()
+        qrurl = str(data.get("url") or "").strip()
+        if not key or not qrurl:
+            message = _bilibili_login_message(payload, "二维码生成失败")
+            logger.debug(
+                "B 站扫码登录二维码响应缺少字段: key_present=%s qrurl_present=%s message=%s",
+                bool(key),
+                bool(qrurl),
+                message,
+            )
+            return JSONResponse({"ok": False, "error": message}, status_code=502)
+
+        logger.debug(
+            "B 站扫码登录二维码刷新成功: key=%s qrurl_len=%s",
+            _mask_debug_token(key),
+            len(qrurl),
+        )
+        return JSONResponse({
+            "ok": True,
+            "key": key,
+            "qrimg": _make_qr_data_uri(qrurl),
+            "qrurl": qrurl,
+            "message": "二维码已刷新",
+        })
+    except RequestsException as exc:
+        logger.warning("B 站扫码登录二维码请求失败: %s", exc)
+        return JSONResponse({"ok": False, "error": f"B 站 API 请求失败: {exc}"}, status_code=502)
+    except Exception as exc:
+        logger.exception("创建 B 站扫码登录二维码失败")
+        return JSONResponse({"ok": False, "error": f"创建二维码失败: {exc}"}, status_code=500)
+
+
+@admin_router.post("/admin/api/bilibili/login/qr/check")
+async def admin_bilibili_login_qr_check(request: Request):
+    """检查 B 站扫码登录状态，成功时返回 Cookie。"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    key = str(body.get("key") or "").strip()
+    if not key:
+        return JSONResponse({"ok": False, "error": "二维码 key 不能为空"}, status_code=400)
+
+    try:
+        logger.debug("B 站扫码登录轮询开始: key=%s", _mask_debug_token(key))
+        payload, response = _bilibili_api_get(
+            _BILIBILI_QR_POLL_PATH,
+            params={"qrcode_key": key},
+        )
+        if int(payload.get("code", -1)) != 0:
+            message = _bilibili_login_message(payload, "登录状态检查失败")
+            logger.debug(
+                "B 站扫码登录轮询接口失败: key=%s code=%s message=%s",
+                _mask_debug_token(key),
+                payload.get("code"),
+                message,
+            )
+            return JSONResponse({"ok": False, "error": message}, status_code=502)
+
+        code = _bilibili_qr_code(payload)
+        message = _bilibili_login_message(payload)
+        status_map = {
+            0: "success",
+            86038: "expired",
+            86090: "scanned",
+            86101: "waiting",
+        }
+        status = status_map.get(code, "unknown")
+        logger.debug(
+            "B 站扫码登录轮询结果: key=%s code=%s status=%s message=%s",
+            _mask_debug_token(key),
+            code,
+            status,
+            message,
+        )
+        result = {
+            "ok": True,
+            "code": code,
+            "status": status,
+            "message": message,
+        }
+        if code == 0:
+            cookie = _bilibili_cookie_from_poll(payload, response)
+            if not cookie:
+                return JSONResponse(
+                    {"ok": False, "error": "扫码成功但 B 站未返回 Cookie"},
+                    status_code=502,
+                )
+            result["cookie"] = cookie
+            try:
+                account_status = _bilibili_account_status(cookie)
+                if account_status.get("logged_in"):
+                    result["profile"] = account_status.get("profile")
+                    logger.debug(
+                        "B 站扫码登录成功并识别账号: key=%s %s",
+                        _mask_debug_token(key),
+                        _debug_profile_text(account_status.get("profile")),
+                    )
+                else:
+                    result["profile_message"] = account_status.get("message", "")
+                    logger.debug(
+                        "B 站扫码登录成功但账号未识别: key=%s message=%s",
+                        _mask_debug_token(key),
+                        result["profile_message"],
+                    )
+            except Exception as exc:
+                logger.debug("B 站扫码成功后查询账号信息失败: %s", exc)
+                result["profile_message"] = f"账号信息查询失败: {exc}"
+            result["message"] = message or "登录成功"
+        return JSONResponse(result)
+    except RequestsException as exc:
+        logger.warning("B 站扫码登录状态检查失败: %s", exc)
+        return JSONResponse({"ok": False, "error": f"B 站 API 请求失败: {exc}"}, status_code=502)
+    except Exception as exc:
+        logger.exception("检查 B 站扫码登录状态失败")
+        return JSONResponse({"ok": False, "error": f"检查登录状态失败: {exc}"}, status_code=500)
+
+
+@admin_router.get("/admin/api/bilibili/account")
+def admin_bilibili_account():
+    """返回当前配置 Cookie 对应的 B 站账号信息。"""
+    try:
+        cookie = str(cfg.BILIBILI_MUSIC_CONFIG.get("cookie") or "")
+        logger.debug("B 站账号状态接口请求: %s", _cookie_debug_summary(cookie))
+        result = _bilibili_account_status(cookie)
+        if result.get("logged_in"):
+            logger.debug("B 站账号状态接口响应: logged_in=True %s", _debug_profile_text(result.get("profile")))
+        else:
+            logger.debug("B 站账号状态接口响应: logged_in=False message=%s", result.get("message", ""))
+        return JSONResponse(result)
+    except RequestsException as exc:
+        logger.warning("B 站账号状态查询失败: %s", exc)
+        return JSONResponse({"ok": True, "logged_in": False, "message": f"B 站 API 请求失败: {exc}"})
+    except Exception as exc:
+        logger.warning("B 站账号状态查询异常: %s", exc, exc_info=True)
+        return JSONResponse({"ok": True, "logged_in": False, "message": f"账号状态查询失败: {exc}"})
 
 
 @admin_router.post("/admin/api/config/reset")
@@ -748,8 +1588,57 @@ def admin_reset_config_overrides():
     web_player.reset_redis(force=True)
     web_player.reset_netease()
     _set_liked_ids_cache([])
+    try:
+        music_runtime = web_player.refresh_music_platforms()
+    except Exception as exc:
+        logger.debug("重置配置后刷新音乐平台失败: %s", exc)
+        music_runtime = {"available": False, "error": str(exc)}
     cfg.refresh_runtime_dependents({"redis", "web_player"})
-    return JSONResponse({"ok": True, "removed": True, "path": cfg.ADMIN_OVERRIDES_PATH})
+    return JSONResponse({"ok": True, "removed": True, "path": cfg.ADMIN_OVERRIDES_PATH, "music_platforms": music_runtime})
+
+
+def _parse_oopz_login_payload(body: dict[str, Any]) -> tuple[str, str, float]:
+    if not isinstance(body, dict):
+        body = {}
+    phone = str(body.get("phone", "") or "").strip()
+    password = str(body.get("password", "") or "")
+    try:
+        timeout = float(body.get("timeout", 90) or 90)
+    except (TypeError, ValueError):
+        timeout = 90.0
+    return phone, password, max(30.0, min(timeout, 180.0))
+
+
+def _client_safe_oopz_login_result(result: dict[str, Any]) -> dict[str, Any]:
+    """移除仅供服务端热更新用的原始凭据。"""
+    return {key: value for key, value in result.items() if key != "raw"}
+
+
+@admin_router.post("/admin/api/oopz/login")
+async def admin_oopz_login(request: Request):
+    if _oopz_login_lock.locked():
+        return JSONResponse({"ok": False, "error": "OOPZ 登录任务正在执行"}, status_code=409)
+
+    phone, password, timeout = _parse_oopz_login_payload(await request.json())
+
+    async with _oopz_login_lock:
+        try:
+            from oopz_password_login import OopzPasswordLoginError, login_with_password
+
+            result = await login_with_password(phone, password, timeout=timeout, headless=True, save=True)
+            raw_credentials = result.get("raw", {})
+            runtime = _refresh_oopz_runtime(raw_credentials)
+            saved = result.get("saved") or []
+            return JSONResponse({
+                **_client_safe_oopz_login_result(result),
+                "runtime": runtime,
+                "message": "OOPZ 登录成功，已保存到: " + ("、".join(saved) if saved else "运行时"),
+            })
+        except OopzPasswordLoginError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        except Exception as exc:
+            logger.exception("后台 OOPZ 账号密码登录失败")
+            return JSONResponse({"ok": False, "error": f"OOPZ 登录失败: {exc}"}, status_code=500)
 
 
 def _parse_oopz_login_payload(body: dict[str, Any]) -> tuple[str, str, float]:

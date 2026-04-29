@@ -144,6 +144,7 @@ def reset_netease() -> None:
 
 
 _sender = None
+_music_dependency = None
 _plugin_runtime = None
 _plugin_host = None
 
@@ -173,8 +174,27 @@ def get_plugin_host():
 
 def register_runtime_dependencies(*, music=None, plugins=None, plugin_host=None) -> None:
     """兼容旧测试/调用方的运行时依赖注入入口。"""
+    global _music_dependency
+    if music is not None:
+        _music_dependency = music
     if plugins is not None:
         set_plugin_runtime(plugins, plugin_host)
+
+
+def refresh_music_platforms() -> dict:
+    """在配置热更新后刷新已创建的音乐平台实例。"""
+    reset_netease()
+    _platform_cache.clear()
+    if _music_dependency is None:
+        return {"available": False, "reason": "music 未注册"}
+    refresh = getattr(_music_dependency, "refresh_platforms", None)
+    if callable(refresh):
+        return refresh()
+    handler = getattr(_music_dependency, "_handler", None)
+    refresh = getattr(handler, "refresh_platforms", None)
+    if callable(refresh):
+        return refresh()
+    return {"available": False, "reason": "音乐处理器尚未初始化"}
 
 
 def _admin_enabled() -> bool:
@@ -324,16 +344,20 @@ def add_song_to_queue(body: dict, area: str = "") -> dict:
         return {"ok": False, "error": "缺少歌曲 ID"}
     platform = body.get("platform", "netease")
     p = _resolve_platform(platform)
-    url = p.get_song_url(song_id)
-    if not url:
-        return {"ok": False, "error": "无法获取播放链接，可能需要 VIP"}
-
     name = body.get("name", "")
     artists = body.get("artists", "")
     album = body.get("album", "")
     cover = body.get("cover", "")
     duration_ms = body.get("duration", 0)
     duration_text = body.get("durationText", "")
+    try:
+        url = p.get_song_url(song_id, expected_duration_ms=duration_ms or 0, song_name=name)
+    except TypeError:
+        url = p.get_song_url(song_id)
+    if not url:
+        detail = getattr(p, "last_song_url_error", "") or "无法获取播放链接，可能需要 VIP"
+        return {"ok": False, "error": detail}
+
     song_data = {
         "platform": platform,
         "song_id": str(song_id),

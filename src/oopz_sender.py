@@ -23,7 +23,7 @@ except ImportError:
 from logger_config import get_logger
 from oopz_api import OopzApiMixin
 from proxy_utils import configure_requests_session
-from oopz_upload import UploadMixin, get_image_info  # noqa: F401 — re-export
+from oopz_upload import UploadMixin, get_image_info
 
 logger = get_logger("OopzSender")
 

@@ -163,11 +163,33 @@
                 <div class="field field--wide"><label for="cfg_oopz_proxy">OOPZ 代理</label><input id="cfg_oopz_proxy" type="text" placeholder="direct / http://127.0.0.1:7890" /></div>
                 <div class="field field--wide field--check"><label><input id="cfg_oopz_announcement" type="checkbox" /> 使用公告样式消息</label></div>
                 <div class="field field--wide"><label for="cfg_netease_base_url">网易云 API 地址</label><input id="cfg_netease_base_url" type="text" placeholder="http://127.0.0.1:3000" /></div>
+                <div class="field field--wide">
+                  <label>网易云扫码登录</label>
+                  <div class="netease-login">
+                    <div class="action-row">
+                      <button id="cfg_netease_qr_refresh" class="btn btn-sm btn-primary" type="button" onclick="refreshNeteaseQr()">刷新二维码</button>
+                      <button id="cfg_netease_qr_save_persist" class="btn btn-sm btn-ghost" type="button" onclick="saveNeteaseQrCookie(true)" disabled>保存并持久化</button>
+                      <button id="cfg_netease_qr_save_runtime" class="btn btn-sm btn-ghost" type="button" onclick="saveNeteaseQrCookie(false)" disabled>仅当前进程生效</button>
+                    </div>
+                    <div class="netease-login__body">
+                      <div id="cfg_netease_qr_box" class="netease-qr-box">
+                        <img id="cfg_netease_qr_img" alt="网易云扫码登录二维码" hidden />
+                        <span id="cfg_netease_qr_empty">等待刷新</span>
+                      </div>
+                      <div class="netease-login__meta">
+                        <p id="cfg_netease_qr_status" class="section-copy">未开始</p>
+                        <p id="cfg_netease_account_status" class="section-copy" data-netease-account-status>当前账号：未检测</p>
+                        <a id="cfg_netease_qr_link" class="text-link" href="#" target="_blank" rel="noopener" hidden>打开二维码链接</a>
+                      </div>
+                    </div>
+                  </div>
+                </div>
                 <div class="field"><label for="cfg_netease_timeout">网易云音频超时（秒）</label><input id="cfg_netease_timeout" type="number" min="5" /></div>
                 <div class="field"><label for="cfg_netease_retries">网易云音频重试次数</label><input id="cfg_netease_retries" type="number" min="0" /></div>
                 <div class="field"><label for="cfg_netease_quality">网易云音质</label><input id="cfg_netease_quality" type="text" placeholder="standard / exhigh" /></div>
                 <div class="field field--wide">
                   <label for="cfg_netease_cookie">网易云 Cookie</label>
+                  <div class="netease-account-panel" data-netease-account-status>当前网易云账号：未检测</div>
                   <div class="secret-input">
                     <input id="cfg_netease_cookie" type="password" placeholder="留空表示不修改" />
                     <button class="btn btn-sm btn-ghost" type="button" onclick="toggleSecret('cfg_netease_cookie', this)">显示</button>
@@ -224,7 +246,28 @@
               <div class="field-grid">
                 <div class="field field--check"><label><input id="cfg_bilibili_enabled" type="checkbox" /> 启用 B 站音乐</label></div>
                 <div class="field field--wide">
+                  <label>B 站扫码登录</label>
+                  <div class="qr-login">
+                    <div class="action-row">
+                      <button id="cfg_bilibili_qr_refresh" class="btn btn-sm btn-primary" type="button" onclick="refreshBilibiliQr()">刷新二维码</button>
+                      <button id="cfg_bilibili_qr_save_persist" class="btn btn-sm btn-ghost" type="button" onclick="saveBilibiliQrCookie(true)" disabled>保存并持久化</button>
+                      <button id="cfg_bilibili_qr_save_runtime" class="btn btn-sm btn-ghost" type="button" onclick="saveBilibiliQrCookie(false)" disabled>仅当前进程生效</button>
+                    </div>
+                    <div class="qr-login__body">
+                      <div id="cfg_bilibili_qr_box" class="qr-box">
+                        <img id="cfg_bilibili_qr_img" alt="B 站扫码登录二维码" hidden />
+                        <span id="cfg_bilibili_qr_empty">等待刷新</span>
+                      </div>
+                      <div class="qr-login__meta">
+                        <p id="cfg_bilibili_qr_status" class="section-copy">未开始</p>
+                        <a id="cfg_bilibili_qr_link" class="text-link" href="#" target="_blank" rel="noopener" hidden>打开二维码链接</a>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="field field--wide">
                   <label for="cfg_bilibili_cookie">Cookie</label>
+                  <div id="cfg_bilibili_account_status" class="account-panel" data-bilibili-account-status>当前B站账号：未检测</div>
                   <div class="secret-input">
                     <input id="cfg_bilibili_cookie" type="password" placeholder="留空表示不修改" />
                     <button class="btn btn-sm btn-ghost" type="button" onclick="toggleSecret('cfg_bilibili_cookie', this)">显示</button>

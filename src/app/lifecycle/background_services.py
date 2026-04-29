@@ -27,11 +27,12 @@ class BackgroundServiceRunner:
         logger.info("自动播放监控已启动。")
 
     def _start_web_player(self, context: AppContext) -> None:
-        from web_player import set_sender, set_plugin_runtime
+        from web_player import register_runtime_dependencies, set_sender
         set_sender(context.sender)
-        set_plugin_runtime(
-            context.handler.infrastructure.plugins,
-            context.handler.plugin_host,
+        register_runtime_dependencies(
+            music=context.handler.infrastructure.music,
+            plugins=context.handler.infrastructure.plugins,
+            plugin_host=context.handler.plugin_host,
         )
         self._warmup_members_cache(context.sender)
         web_host = WEB_PLAYER_CONFIG.get("host", "0.0.0.0")

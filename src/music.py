@@ -21,7 +21,7 @@ from music_web_control import WebControlExecutor
 from music_platform import PlatformRegistry
 from music_playback import (
     PlaybackMixin,
-    reset_web_player_url_cache,  # noqa: F401 — re-export
+    reset_web_player_url_cache,
     _web_player_link,
 )
 
@@ -135,6 +135,18 @@ class MusicHandler(PlaybackMixin):
                 logger.info("B 站音乐平台已注册")
         except Exception as e:
             logger.debug("B 站音乐平台初始化跳过: %s", e)
+
+    def refresh_platforms(self) -> dict:
+        """后台配置变更后刷新平台实例，让新 Cookie 立即用于当前进程。"""
+        self.netease = NeteaseCloud()
+        self.platforms = PlatformRegistry()
+        self.platforms.register(self.netease)
+        self._init_extra_platforms()
+        return {
+            "available": True,
+            "refreshed": True,
+            "platforms": list(self.platforms.available.keys()),
+        }
 
     def _get_web_link(self, area: str = "") -> str:
         """获取 Web 播放器链接（按需生成随机访问令牌）。"""
@@ -373,9 +385,17 @@ class MusicHandler(PlaybackMixin):
         if song.get("url"):
             data = dict(song)
         elif song.get("name") and song.get("artists"):
-            url = p.get_song_url(song_id)
+            try:
+                url = p.get_song_url(
+                    song_id,
+                    expected_duration_ms=song.get("duration", 0) or song.get("duration_ms", 0) or 0,
+                    song_name=song.get("name", ""),
+                )
+            except TypeError:
+                url = p.get_song_url(song_id)
             if not url:
-                self.sender.send_message("错误: 无法获取播放链接", channel=channel, area=area)
+                detail = getattr(p, "last_song_url_error", "") or "无法获取播放链接"
+                self.sender.send_message(f"错误: {detail}", channel=channel, area=area)
                 return
             data = dict(song)
             data["url"] = url
