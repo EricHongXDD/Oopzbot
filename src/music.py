@@ -21,7 +21,7 @@ from music_web_control import WebControlExecutor
 from music_platform import PlatformRegistry
 from music_playback import (
     PlaybackMixin,
-    reset_web_player_url_cache,
+    reset_web_player_url_cache,  # noqa: F401 — re-export
     _web_player_link,
 )
 

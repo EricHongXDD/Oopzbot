@@ -1641,50 +1641,6 @@ async def admin_oopz_login(request: Request):
             return JSONResponse({"ok": False, "error": f"OOPZ 登录失败: {exc}"}, status_code=500)
 
 
-def _parse_oopz_login_payload(body: dict[str, Any]) -> tuple[str, str, float]:
-    if not isinstance(body, dict):
-        body = {}
-    phone = str(body.get("phone", "") or "").strip()
-    password = str(body.get("password", "") or "")
-    try:
-        timeout = float(body.get("timeout", 90) or 90)
-    except (TypeError, ValueError):
-        timeout = 90.0
-    return phone, password, max(30.0, min(timeout, 180.0))
-
-
-def _client_safe_oopz_login_result(result: dict[str, Any]) -> dict[str, Any]:
-    """移除仅供服务端热更新用的原始凭据。"""
-    return {key: value for key, value in result.items() if key != "raw"}
-
-
-@admin_router.post("/admin/api/oopz/login")
-async def admin_oopz_login(request: Request):
-    if _oopz_login_lock.locked():
-        return JSONResponse({"ok": False, "error": "OOPZ 登录任务正在执行"}, status_code=409)
-
-    phone, password, timeout = _parse_oopz_login_payload(await request.json())
-
-    async with _oopz_login_lock:
-        try:
-            from oopz_password_login import OopzPasswordLoginError, login_with_password
-
-            result = await login_with_password(phone, password, timeout=timeout, headless=True, save=True)
-            raw_credentials = result.get("raw", {})
-            runtime = _refresh_oopz_runtime(raw_credentials)
-            saved = result.get("saved") or []
-            return JSONResponse({
-                **_client_safe_oopz_login_result(result),
-                "runtime": runtime,
-                "message": "OOPZ 登录成功，已保存到: " + ("、".join(saved) if saved else "运行时"),
-            })
-        except OopzPasswordLoginError as exc:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        except Exception as exc:
-            logger.exception("后台 OOPZ 账号密码登录失败")
-            return JSONResponse({"ok": False, "error": f"OOPZ 登录失败: {exc}"}, status_code=500)
-
-
 @admin_router.get("/admin/api/overview")
 def admin_overview():
     return JSONResponse(_overview_payload(), headers={"Cache-Control": "no-store"})

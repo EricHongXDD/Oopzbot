@@ -7,7 +7,7 @@ from unittest.mock import patch
 try:
     from fastapi.testclient import TestClient
     _TESTCLIENT_ERROR = None
-except Exception as exc:
+except Exception as exc:  # pragma: no cover - 依赖缺失时跳过
     TestClient = None
     _TESTCLIENT_ERROR = exc
 
