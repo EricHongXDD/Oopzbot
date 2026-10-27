@@ -12,6 +12,29 @@ from app import runtime  # noqa: E402
 
 
 class RuntimeConfigValidationTest(unittest.TestCase):
+    def test_environment_can_select_official_routes_without_changing_credentials(self):
+        config = {"jwt_token": "test-token", "ws_url": "wss://ws.oopz.cn"}
+        with (
+            mock.patch.object(runtime.runtime_config, "OOPZ_CONFIG", config),
+            mock.patch.dict("os.environ", {
+                "BOT_OOPZ_BASE_URL": " https://gateway1.oopz.cn/ ",
+                "BOT_OOPZ_WS_URL": " wss://ws1.oopz.cn ",
+            }),
+        ):
+            runtime.apply_runtime_overrides()
+        self.assertEqual(config["base_url"], "https://gateway1.oopz.cn")
+        self.assertEqual(config["ws_url"], "wss://ws1.oopz.cn")
+        self.assertEqual(config["jwt_token"], "test-token")
+
+    def test_empty_websocket_environment_restores_automatic_pairing(self):
+        config = {"ws_url": "wss://ws.oopz.cn"}
+        with (
+            mock.patch.object(runtime.runtime_config, "OOPZ_CONFIG", config),
+            mock.patch.dict("os.environ", {"BOT_OOPZ_WS_URL": ""}),
+        ):
+            runtime.apply_runtime_overrides()
+        self.assertEqual(config["ws_url"], "")
+
     def test_rejects_removed_proxy_trust_switch(self) -> None:
         config = {
             "trust_proxy_header": False,
